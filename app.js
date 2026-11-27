@@ -564,3 +564,288 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   });
 }
+
+// =====================================
+// AI MASTER — Google Flow Video Studio
+// =====================================
+
+const FLOW_URL = "https://labs.google/fx/tools/flow";
+
+let videoDBPromise = null;
+
+function openVideoDB() {
+  if (videoDBPromise) return videoDBPromise;
+
+  videoDBPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open("AIMASTER_VIDEO_DB", 1);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+
+      if (!db.objectStoreNames.contains("videos")) {
+        db.createObjectStore("videos", { keyPath: "id" });
+      }
+    };
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => {
+      videoDBPromise = null;
+      reject(request.error);
+    };
+  });
+
+  return videoDBPromise;
+}
+
+async function saveVideoFile(item) {
+  const db = await openVideoDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("videos", "readwrite");
+    tx.objectStore("videos").put(item);
+
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function readVideoFiles() {
+  const db = await openVideoDB();
+
+  return new Promise((resolve, reject) => {
+    const request = db.transaction("videos", "readonly")
+      .objectStore("videos").getAll();
+
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function removeVideoFile(id) {
+  const db = await openVideoDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("videos", "readwrite");
+    tx.objectStore("videos").delete(id);
+
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+
+// إنشاء أدوات الفيديو في الصفحة
+
+function setupFlowStudio() {
+  const button = $("#videoDemo");
+
+  if (!button || $("#flowStudioTools")) return;
+
+  const panel = document.createElement("div");
+  panel.id = "flowStudioTools";
+
+  panel.style.cssText =
+    "display:grid;gap:12px;margin:15px 0;padding:14px;border:1px solid #7048e8;border-radius:12px;";
+
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "📋 نسخ وصف الفيديو";
+
+  const flowButton = document.createElement("button");
+  flowButton.type = "button";
+  flowButton.textContent = "🌐 فتح Google Flow";
+
+  const uploadTitle = document.createElement("b");
+  uploadTitle.textContent = "استيراد فيديو من الهاتف";
+
+  const uploadHint = document.createElement("small");
+  uploadHint.textContent =
+    "اختر فيديو قمت بتنزيله من Google Flow لحفظه في معرضك.";
+
+  const upload = document.createElement("input");
+  upload.type = "file";
+  upload.accept = "video/*";
+  upload.id = "videoImportFile";
+
+  const buttons = [copyButton, flowButton];
+
+  buttons.forEach(b => {
+    b.style.cssText =
+      "padding:13px;border:0;border-radius:10px;background:#7048e8;color:white;font-weight:bold;";
+  });
+
+  panel.append(
+    copyButton,
+    flowButton,
+    uploadTitle,
+    uploadHint,
+    upload
+  );
+
+  button.insertAdjacentElement("afterend", panel);
+
+  copyButton.addEventListener("click", async () => {
+    const prompt = $("#videoPrompt")?.value.trim();
+
+    if (!prompt) {
+      toast("اكتب وصف الفيديو أولاً");
+      return;
+    }
+
+    const duration = $("#videoDuration")?.value || "8";
+
+    const fullPrompt =
+      prompt + "\n\nTarget video duration: " + duration + " seconds.";
+
+    try {
+      await navigator.clipboard.writeText(fullPrompt);
+      toast("تم نسخ وصف الفيديو بنجاح");
+    } catch {
+      const field = document.createElement("textarea");
+      field.value = fullPrompt;
+      document.body.appendChild(field);
+      field.select();
+
+      const copied = document.execCommand("copy");
+      field.remove();
+
+      toast(copied ? "تم نسخ الوصف" : "تعذر النسخ");
+    }
+  });
+
+  flowButton.addEventListener("click", () => {
+    window.open(FLOW_URL, "_blank", "noopener");
+    toast("افتح Google Flow لإنشاء الفيديو");
+  });
+
+  upload.addEventListener("change", async () => {
+    const file = upload.files?.[0];
+
+    if (!file) return;
+
+    if (!file.type.startsWith("video/")) {
+      toast("الملف المختار ليس فيديو");
+      upload.value = "";
+      return;
+    }
+
+    if (file.size > 150 * 1024 * 1024) {
+      toast("حجم الفيديو أكبر من 150 ميغابايت");
+      upload.value = "";
+      return;
+    }
+
+    try {
+      await saveVideoFile({
+        id: "video-" + Date.now(),
+        name: file.name,
+        blob: file,
+        prompt: $("#videoPrompt")?.value.trim() || "",
+        date: new Date().toLocaleString("ar")
+      });
+
+      toast("تم حفظ الفيديو في AI MASTER");
+
+      if ($("#videosMsg")) {
+        $("#videosMsg").textContent = "تم حفظ الفيديو بنجاح.";
+      }
+
+      upload.value = "";
+
+      renderSavedVideos();
+
+    } catch (error) {
+      console.error(error);
+      toast("تعذر حفظ الفيديو. تحقق من مساحة الهاتف.");
+    }
+  });
+}
+
+
+// عرض الفيديوهات داخل المعرض
+
+async function renderSavedVideos() {
+  const gallery = $("#galleryItems");
+
+  if (!gallery) return;
+
+  let section = $("#savedVideoSection");
+
+  if (!section) {
+    section = document.createElement("section");
+    section.id = "savedVideoSection";
+    section.style.cssText = "margin-top:20px;";
+    gallery.appendChild(section);
+  }
+
+  section.innerHTML = "<h3>🎬 فيديوهاتي المحفوظة</h3>";
+
+  try {
+    const videos = await readVideoFiles();
+
+    if (!videos.length) {
+      section.innerHTML +=
+        "<p class='hint'>لم تحفظ أي فيديو بعد.</p>";
+      return;
+    }
+
+    videos.reverse().forEach(item => {
+      const card = document.createElement("article");
+      card.className = "gallery-card";
+      card.style.cssText = "margin:12px 0;padding:12px;";
+
+      const player = document.createElement("video");
+      player.controls = true;
+      player.playsInline = true;
+      player.preload = "metadata";
+      player.style.cssText =
+        "width:100%;border-radius:12px;background:#000;";
+
+      const url = URL.createObjectURL(item.blob);
+      player.src = url;
+
+      const name = document.createElement("p");
+      name.textContent = item.name;
+
+      const date = document.createElement("small");
+      date.textContent = item.date || "";
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "🗑 حذف الفيديو";
+      remove.style.cssText =
+        "display:block;margin-top:12px;padding:10px;background:#a22;color:white;border:0;border-radius:9px;";
+
+      remove.addEventListener("click", async () => {
+        if (!confirm("هل تريد حذف هذا الفيديو؟")) return;
+
+        await removeVideoFile(item.id);
+        URL.revokeObjectURL(url);
+        card.remove();
+
+        toast("تم حذف الفيديو");
+      });
+
+      card.append(player, name, date, remove);
+      section.appendChild(card);
+    });
+
+  } catch (error) {
+    section.innerHTML +=
+      "<p>تعذر تحميل الفيديوهات.</p>";
+  }
+}
+
+
+// تفعيل الأدوات وتحديث المعرض
+
+setupFlowStudio();
+
+const oldRenderGallery = renderGallery;
+
+renderGallery = async function () {
+  await oldRenderGallery();
+  await renderSavedVideos();
+};
+
+renderGallery();
