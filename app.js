@@ -22,7 +22,6 @@ document.querySelectorAll("[data-page]").forEach(b =>
 function toast(msg) {
   const t = $("#toast");
   if (!t) return;
-
   t.textContent = msg;
   t.classList.add("show");
   setTimeout(() => t.classList.remove("show"), 2300);
@@ -41,43 +40,14 @@ const set = (k, v) =>
 
 
 // =====================================
-// نظام تحسين أوصاف الصور
+// تحسين أوصاف الصور — نسخة آمنة
 // =====================================
 
 let originalImagePrompt = null;
 let promptIsEnhanced = false;
 
-const realismInstructions = `
-
-PHOTOREALISTIC IMAGE REQUIREMENTS:
-Create a realistic professional photograph.
-Follow the user's original description as accurately as possible.
-Preserve the exact requested subject, age, appearance,
-hair color, eye color, clothing, clothing color, pose,
-facial expression, objects and background.
-Do not change or replace any specifically requested detail.
-
-REALISTIC DETAILS:
-Natural human anatomy and body proportions.
-Detailed realistic facial features.
-Natural skin texture with visible fine details.
-Realistic individual hair strands.
-Accurate clothing materials, folds and stitching.
-Natural hands and correctly shaped fingers.
-Realistic lighting, shadows, reflections and perspective.
-Natural photographic colors and realistic depth of field.
-
-AVOID:
-Cartoon, anime, illustration, CGI, plastic skin,
-artificial beauty filters, distorted anatomy,
-extra fingers, missing fingers, blurry faces,
-unrequested objects and unwanted changes.
-
-STYLE:
-High-quality professional DSLR photography.
-Extremely photorealistic, sharp focus,
-natural lighting and fine image details.
-`;
+const realismInstructions =
+  "\n\nPhotorealistic professional photograph. Preserve the exact subject, appearance, clothing, pose, objects and background requested by the user. Natural anatomy, realistic skin and hair texture, accurate lighting and shadows, natural colors, sharp details. No cartoon, anime, CGI, distorted anatomy, extra fingers or unrequested objects.";
 
 function setupPromptEnhancer() {
   const field = $("#imagePrompt");
@@ -86,21 +56,18 @@ function setupPromptEnhancer() {
 
   const tools = document.createElement("div");
   tools.id = "promptTools";
-
   tools.style.cssText =
     "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;";
 
   const enhanceButton = document.createElement("button");
   enhanceButton.type = "button";
   enhanceButton.textContent = "✨ تحسين واقعية الوصف";
-
   enhanceButton.style.cssText =
     "padding:12px;border:0;border-radius:10px;background:#7048e8;color:white;font-weight:bold;";
 
   const restoreButton = document.createElement("button");
   restoreButton.type = "button";
   restoreButton.textContent = "↩ استعادة الوصف الأصلي";
-
   restoreButton.style.cssText =
     "padding:12px;border:1px solid #888;border-radius:10px;background:transparent;color:inherit;";
 
@@ -117,15 +84,22 @@ function setupPromptEnhancer() {
       return;
     }
 
-    const enhanced = current + realismInstructions;
-
-    if (enhanced.length > 2048) {
-      toast("الوصف طويل جداً للتحسين. اختصره قليلاً.");
+    if (current.length > 2048) {
+      toast("الوصف الأصلي يتجاوز حد 2048 حرفاً؛ اختصره أولاً");
       return;
     }
 
+    const remaining = 2048 - current.length;
+
+    if (remaining < 40) {
+      toast("الوصف طويل جداً؛ سنحتفظ به دون إضافة تعليمات");
+      return;
+    }
+
+    const addition = realismInstructions.slice(0, remaining);
+
     originalImagePrompt = current;
-    field.value = enhanced;
+    field.value = current + addition;
     promptIsEnhanced = true;
 
     toast("تم تحسين تعليمات الواقعية");
@@ -170,7 +144,6 @@ function openImageDB() {
     };
 
     request.onsuccess = () => resolve(request.result);
-
     request.onerror = () => reject(request.error);
   });
 
@@ -182,7 +155,6 @@ async function saveImage(item) {
 
   return new Promise((resolve, reject) => {
     const transaction = db.transaction("images", "readwrite");
-
     transaction.objectStore("images").put(item);
 
     transaction.oncomplete = resolve;
@@ -205,7 +177,7 @@ async function getImages() {
 
 
 // =====================================
-// توليد الصور عبر Workers AI
+// توليد الصور عبر Cloudflare Workers AI
 // =====================================
 
 $("#imageDemo")?.addEventListener("click", async () => {
@@ -245,17 +217,17 @@ $("#imageDemo")?.addEventListener("click", async () => {
     const contentType = response.headers.get("content-type") || "";
 
     if (!contentType.includes("application/json")) {
-      throw new Error("استجابة الخادم غير صحيحة");
+      throw new Error("استجابة الخادم غير صحيحة. أعد تحميل الصفحة وحاول مجدداً.");
     }
 
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(data.error || "فشل توليد الصورة");
+      throw new Error(data.error || "فشل توليد الصورة. حاول مرة أخرى.");
     }
 
     if (!data.image || !data.image.startsWith("data:image/")) {
-      throw new Error("لم تصل صورة صالحة من المحرك");
+      throw new Error("لم تصل صورة صالحة من محرك التوليد.");
     }
 
     const imageItem = {
@@ -274,7 +246,6 @@ $("#imageDemo")?.addEventListener("click", async () => {
     if (!img) {
       img = document.createElement("img");
       img.id = "generatedImage";
-
       img.style.cssText =
         "display:block;width:100%;max-width:600px;margin:15px auto;border-radius:12px;";
 
@@ -293,7 +264,7 @@ $("#imageDemo")?.addEventListener("click", async () => {
 
   } catch (error) {
     if (msg) {
-      msg.textContent = "حدث خطأ: " + error.message;
+      msg.textContent = "حدث خطأ: " + (error.message || "تعذر الاتصال بمحرك الصور");
     }
 
     toast("تعذر توليد الصورة");
@@ -334,7 +305,6 @@ $("#videoImage")?.addEventListener("change", e => {
   }
 
   videoImageURL = URL.createObjectURL(file);
-
   preview.src = videoImageURL;
   preview.classList.remove("hidden");
 
@@ -352,7 +322,6 @@ $("#videoImage")?.addEventListener("change", e => {
 
 $("#videoDemo")?.addEventListener("click", () => {
   const prompt = $("#videoPrompt")?.value.trim();
-
   const engine = $("#videoEngine")?.value || "auto";
   const duration = $("#videoDuration")?.value || "5";
   const imageFile = $("#videoImage")?.files?.[0] || null;
@@ -439,16 +408,13 @@ $("#saveCharacter")?.addEventListener("click", () => {
   }
 
   const characters = get("ai_master_characters");
-
   characters.push({ name, desc });
-
   set("ai_master_characters", characters);
 
   $("#charName").value = "";
   $("#charDesc").value = "";
 
   renderCharacters();
-
   toast("تم حفظ الشخصية على هذا الجهاز");
 });
 
@@ -520,7 +486,6 @@ async function renderGallery() {
       card.className = "gallery-card";
 
       const image = document.createElement("img");
-
       image.src = item.image;
       image.alt = item.prompt;
 
@@ -541,7 +506,6 @@ async function renderGallery() {
       if (item.enhancedPrompt) {
         const enhanced = document.createElement("details");
         const summary = document.createElement("summary");
-
         summary.textContent = "عرض الوصف المحسّن";
 
         const enhancedText = document.createElement("p");
