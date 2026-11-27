@@ -39,7 +39,120 @@ const get = (k, d = []) => {
 const set = (k, v) =>
   localStorage.setItem(k, JSON.stringify(v));
 
+
+// =====================================
+// نظام تحسين أوصاف الصور
+// =====================================
+
+let originalImagePrompt = null;
+let promptIsEnhanced = false;
+
+const realismInstructions = `
+
+PHOTOREALISTIC IMAGE REQUIREMENTS:
+Create a realistic professional photograph.
+Follow the user's original description as accurately as possible.
+Preserve the exact requested subject, age, appearance,
+hair color, eye color, clothing, clothing color, pose,
+facial expression, objects and background.
+Do not change or replace any specifically requested detail.
+
+REALISTIC DETAILS:
+Natural human anatomy and body proportions.
+Detailed realistic facial features.
+Natural skin texture with visible fine details.
+Realistic individual hair strands.
+Accurate clothing materials, folds and stitching.
+Natural hands and correctly shaped fingers.
+Realistic lighting, shadows, reflections and perspective.
+Natural photographic colors and realistic depth of field.
+
+AVOID:
+Cartoon, anime, illustration, CGI, plastic skin,
+artificial beauty filters, distorted anatomy,
+extra fingers, missing fingers, blurry faces,
+unrequested objects and unwanted changes.
+
+STYLE:
+High-quality professional DSLR photography.
+Extremely photorealistic, sharp focus,
+natural lighting and fine image details.
+`;
+
+function setupPromptEnhancer() {
+  const field = $("#imagePrompt");
+
+  if (!field || $("#promptTools")) return;
+
+  const tools = document.createElement("div");
+  tools.id = "promptTools";
+
+  tools.style.cssText =
+    "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;";
+
+  const enhanceButton = document.createElement("button");
+  enhanceButton.type = "button";
+  enhanceButton.textContent = "✨ تحسين واقعية الوصف";
+
+  enhanceButton.style.cssText =
+    "padding:12px;border:0;border-radius:10px;background:#7048e8;color:white;font-weight:bold;";
+
+  const restoreButton = document.createElement("button");
+  restoreButton.type = "button";
+  restoreButton.textContent = "↩ استعادة الوصف الأصلي";
+
+  restoreButton.style.cssText =
+    "padding:12px;border:1px solid #888;border-radius:10px;background:transparent;color:inherit;";
+
+  enhanceButton.addEventListener("click", () => {
+    const current = field.value.trim();
+
+    if (!current) {
+      toast("اكتب وصف الصورة أولاً");
+      return;
+    }
+
+    if (promptIsEnhanced) {
+      toast("الوصف محسّن بالفعل");
+      return;
+    }
+
+    const enhanced = current + realismInstructions;
+
+    if (enhanced.length > 2048) {
+      toast("الوصف طويل جداً للتحسين. اختصره قليلاً.");
+      return;
+    }
+
+    originalImagePrompt = current;
+    field.value = enhanced;
+    promptIsEnhanced = true;
+
+    toast("تم تحسين تعليمات الواقعية");
+  });
+
+  restoreButton.addEventListener("click", () => {
+    if (originalImagePrompt !== null) {
+      field.value = originalImagePrompt;
+    }
+
+    originalImagePrompt = null;
+    promptIsEnhanced = false;
+
+    toast("تم استعادة الوصف الأصلي");
+  });
+
+  tools.append(enhanceButton, restoreButton);
+  field.insertAdjacentElement("afterend", tools);
+}
+
+setupPromptEnhancer();
+
+
+// =====================================
 // قاعدة بيانات الصور
+// =====================================
+
 let dbPromise;
 
 function openImageDB() {
@@ -57,6 +170,7 @@ function openImageDB() {
     };
 
     request.onsuccess = () => resolve(request.result);
+
     request.onerror = () => reject(request.error);
   });
 
@@ -68,6 +182,7 @@ async function saveImage(item) {
 
   return new Promise((resolve, reject) => {
     const transaction = db.transaction("images", "readwrite");
+
     transaction.objectStore("images").put(item);
 
     transaction.oncomplete = resolve;
@@ -88,7 +203,11 @@ async function getImages() {
   });
 }
 
+
+// =====================================
 // توليد الصور عبر Workers AI
+// =====================================
+
 $("#imageDemo")?.addEventListener("click", async () => {
   const prompt = $("#imagePrompt")?.value.trim();
 
@@ -97,11 +216,22 @@ $("#imageDemo")?.addEventListener("click", async () => {
     return;
   }
 
+  if (prompt.length > 2048) {
+    toast("الوصف يجب ألا يتجاوز 2048 حرفاً");
+    return;
+  }
+
+  const originalPrompt =
+    originalImagePrompt !== null ? originalImagePrompt : prompt;
+
   const btn = $("#imageDemo");
   const msg = $("#imageMsg");
 
   btn.disabled = true;
-  msg.textContent = "جارٍ توليد الصورة، انتظر قليلاً...";
+
+  if (msg) {
+    msg.textContent = "جارٍ توليد الصورة، يرجى الانتظار...";
+  }
 
   try {
     const response = await fetch("/api/generate", {
@@ -130,7 +260,8 @@ $("#imageDemo")?.addEventListener("click", async () => {
 
     const imageItem = {
       id: Date.now().toString(),
-      prompt,
+      prompt: originalPrompt,
+      enhancedPrompt: prompt !== originalPrompt ? prompt : null,
       image: data.image,
       ratio: $("#ratio")?.value || "9:16 عمودي",
       date: new Date().toLocaleString("ar")
@@ -143,24 +274,40 @@ $("#imageDemo")?.addEventListener("click", async () => {
     if (!img) {
       img = document.createElement("img");
       img.id = "generatedImage";
+
       img.style.cssText =
         "display:block;width:100%;max-width:600px;margin:15px auto;border-radius:12px;";
-      msg.after(img);
+
+      if (msg) {
+        msg.after(img);
+      }
     }
 
     img.src = data.image;
-    msg.textContent = "تم توليد الصورة وحفظها بنجاح!";
+
+    if (msg) {
+      msg.textContent = "تم توليد الصورة وحفظها بنجاح!";
+    }
+
     toast("تم حفظ الصورة في المعرض");
 
   } catch (error) {
-    msg.textContent = "حدث خطأ: " + error.message;
+    if (msg) {
+      msg.textContent = "حدث خطأ: " + error.message;
+    }
+
     toast("تعذر توليد الصورة");
+
   } finally {
     btn.disabled = false;
   }
 });
 
+
+// =====================================
 // معاينة صورة الفيديو
+// =====================================
+
 let videoImageURL = null;
 
 $("#videoImage")?.addEventListener("change", e => {
@@ -187,17 +334,22 @@ $("#videoImage")?.addEventListener("change", e => {
   }
 
   videoImageURL = URL.createObjectURL(file);
+
   preview.src = videoImageURL;
   preview.classList.remove("hidden");
 
   if (msg) {
-    msg.textContent = "تم اختيار الصورة بنجاح. يمكنك تجهيز إعدادات الفيديو.";
+    msg.textContent = "تم اختيار الصورة بنجاح.";
   }
 
   toast("تم تحميل الصورة ومعاينتها");
 });
 
+
+// =====================================
 // تجهيز إعدادات الفيديو
+// =====================================
+
 $("#videoDemo")?.addEventListener("click", () => {
   const prompt = $("#videoPrompt")?.value.trim();
 
@@ -228,17 +380,26 @@ $("#videoDemo")?.addEventListener("click", () => {
 
   set("ai_master_prompts", items);
 
-  $("#videoMsg").textContent =
-    "تم حفظ إعدادات الفيديو بنجاح. محرك التوليد الحقيقي لم يُربط بعد.";
+  const msg = $("#videoMsg");
+
+  if (msg) {
+    msg.textContent =
+      "تم حفظ إعدادات الفيديو. محرك التوليد الحقيقي لم يُربط بعد.";
+  }
 
   toast("تم حفظ إعدادات الفيديو");
 });
 
+
+// =====================================
 // معاينة الصورة المراد تعديلها
+// =====================================
+
 let editImageURL = null;
 
 $("#editFile")?.addEventListener("change", e => {
   const file = e.target.files?.[0];
+
   if (!file) return;
 
   if (!file.type.startsWith("image/")) {
@@ -253,13 +414,21 @@ $("#editFile")?.addEventListener("change", e => {
 
   editImageURL = URL.createObjectURL(file);
 
-  $("#editPreview").src = editImageURL;
-  $("#editPreview").classList.remove("hidden");
+  const preview = $("#editPreview");
+
+  if (preview) {
+    preview.src = editImageURL;
+    preview.classList.remove("hidden");
+  }
 
   toast("تم اختيار الصورة");
 });
 
+
+// =====================================
 // حفظ الشخصيات
+// =====================================
+
 $("#saveCharacter")?.addEventListener("click", () => {
   const name = $("#charName")?.value.trim();
   const desc = $("#charDesc")?.value.trim();
@@ -272,14 +441,21 @@ $("#saveCharacter")?.addEventListener("click", () => {
   const characters = get("ai_master_characters");
 
   characters.push({ name, desc });
+
   set("ai_master_characters", characters);
 
   $("#charName").value = "";
   $("#charDesc").value = "";
 
   renderCharacters();
+
   toast("تم حفظ الشخصية على هذا الجهاز");
 });
+
+
+// =====================================
+// حماية النصوص المعروضة
+// =====================================
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, c => ({
@@ -290,6 +466,11 @@ function escapeHtml(value) {
     "'": "&#39;"
   }[c]));
 }
+
+
+// =====================================
+// عرض الشخصيات
+// =====================================
 
 function renderCharacters() {
   const characters = get("ai_master_characters");
@@ -307,12 +488,18 @@ function renderCharacters() {
     : "<p class='hint'>لم تحفظ أي شخصية بعد.</p>";
 }
 
+
+// =====================================
 // عرض الصور والأعمال في المعرض
+// =====================================
+
 async function renderGallery() {
   const container = $("#galleryItems");
+
   if (!container) return;
 
-  container.innerHTML = "<p class='hint'>جارٍ تحميل المعرض...</p>";
+  container.innerHTML =
+    "<p class='hint'>جارٍ تحميل المعرض...</p>";
 
   try {
     const images = await getImages();
@@ -321,7 +508,8 @@ async function renderGallery() {
     container.innerHTML = "";
 
     if (!images.length && !prompts.length) {
-      container.innerHTML = "<p class='hint'>لا توجد أعمال محفوظة بعد.</p>";
+      container.innerHTML =
+        "<p class='hint'>لا توجد أعمال محفوظة بعد.</p>";
       return;
     }
 
@@ -332,8 +520,10 @@ async function renderGallery() {
       card.className = "gallery-card";
 
       const image = document.createElement("img");
+
       image.src = item.image;
       image.alt = item.prompt;
+
       image.style.cssText =
         "width:100%;border-radius:12px;display:block;margin-bottom:10px;";
 
@@ -347,6 +537,20 @@ async function renderGallery() {
       date.textContent = item.date || "";
 
       card.append(image, title, description, date);
+
+      if (item.enhancedPrompt) {
+        const enhanced = document.createElement("details");
+        const summary = document.createElement("summary");
+
+        summary.textContent = "عرض الوصف المحسّن";
+
+        const enhancedText = document.createElement("p");
+        enhancedText.textContent = item.enhancedPrompt;
+
+        enhanced.append(summary, enhancedText);
+        card.appendChild(enhanced);
+      }
+
       container.appendChild(card);
     });
 
@@ -374,9 +578,19 @@ async function renderGallery() {
   }
 }
 
+
+// =====================================
+// معلومات المنصة
+// =====================================
+
 $("#themeInfo")?.addEventListener("click", () =>
   toast("AI MASTER — منصتك الخاصة")
 );
+
+
+// =====================================
+// تشغيل الوظائف عند فتح الموقع
+// =====================================
 
 renderCharacters();
 renderGallery();
