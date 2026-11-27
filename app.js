@@ -39,7 +39,7 @@ const get = (k, d = []) => {
 const set = (k, v) =>
   localStorage.setItem(k, JSON.stringify(v));
 
-// قاعدة بيانات لحفظ الصور على الجهاز
+// قاعدة بيانات الصور
 let dbPromise;
 
 function openImageDB() {
@@ -89,8 +89,8 @@ async function getImages() {
 }
 
 // توليد الصور عبر Workers AI
-$("#imageDemo").addEventListener("click", async () => {
-  const prompt = $("#imagePrompt").value.trim();
+$("#imageDemo")?.addEventListener("click", async () => {
+  const prompt = $("#imagePrompt")?.value.trim();
 
   if (!prompt) {
     toast("اكتب وصف الصورة أولاً");
@@ -132,11 +132,10 @@ $("#imageDemo").addEventListener("click", async () => {
       id: Date.now().toString(),
       prompt,
       image: data.image,
-      ratio: $("#ratio").value,
+      ratio: $("#ratio")?.value || "9:16 عمودي",
       date: new Date().toLocaleString("ar")
     };
 
-    // حفظ الصورة نفسها في قاعدة البيانات
     await saveImage(imageItem);
 
     let img = $("#generatedImage");
@@ -161,12 +160,58 @@ $("#imageDemo").addEventListener("click", async () => {
   }
 });
 
-// إعدادات توليد الفيديو
-$("#videoDemo").addEventListener("click", () => {
-  const prompt = $("#videoPrompt").value.trim();
+// معاينة صورة الفيديو
+let videoImageURL = null;
+
+$("#videoImage")?.addEventListener("change", e => {
+  const file = e.target.files?.[0];
+  const preview = $("#videoPreview");
+  const msg = $("#videoMsg");
+
+  if (!file || !preview) return;
+
+  if (!file.type.startsWith("image/")) {
+    toast("يرجى اختيار ملف صورة صالح");
+    e.target.value = "";
+    return;
+  }
+
+  if (file.size > 10 * 1024 * 1024) {
+    toast("حجم الصورة يجب ألا يتجاوز 10 ميغابايت");
+    e.target.value = "";
+    return;
+  }
+
+  if (videoImageURL) {
+    URL.revokeObjectURL(videoImageURL);
+  }
+
+  videoImageURL = URL.createObjectURL(file);
+  preview.src = videoImageURL;
+  preview.classList.remove("hidden");
+
+  if (msg) {
+    msg.textContent = "تم اختيار الصورة بنجاح. يمكنك تجهيز إعدادات الفيديو.";
+  }
+
+  toast("تم تحميل الصورة ومعاينتها");
+});
+
+// تجهيز إعدادات الفيديو
+$("#videoDemo")?.addEventListener("click", () => {
+  const prompt = $("#videoPrompt")?.value.trim();
+
+  const engine = $("#videoEngine")?.value || "auto";
+  const duration = $("#videoDuration")?.value || "5";
+  const imageFile = $("#videoImage")?.files?.[0] || null;
 
   if (!prompt) {
     toast("اكتب وصف الفيديو أولاً");
+    return;
+  }
+
+  if (imageFile && !imageFile.type.startsWith("image/")) {
+    toast("الصورة المختارة غير صالحة");
     return;
   }
 
@@ -175,37 +220,49 @@ $("#videoDemo").addEventListener("click", () => {
   items.unshift({
     type: "فيديو",
     prompt,
+    engine,
+    duration,
+    imageName: imageFile ? imageFile.name : null,
     date: new Date().toLocaleString("ar")
   });
 
   set("ai_master_prompts", items);
 
   $("#videoMsg").textContent =
-    "تم حفظ وصف الفيديو محلياً. محرك الفيديو غير مربوط بعد.";
+    "تم حفظ إعدادات الفيديو بنجاح. محرك التوليد الحقيقي لم يُربط بعد.";
 
-  toast("تم حفظ وصف الفيديو");
+  toast("تم حفظ إعدادات الفيديو");
 });
 
 // معاينة الصورة المراد تعديلها
-$("#editFile").addEventListener("change", e => {
-  const file = e.target.files[0];
+let editImageURL = null;
+
+$("#editFile")?.addEventListener("change", e => {
+  const file = e.target.files?.[0];
   if (!file) return;
 
-  const url = URL.createObjectURL(file);
-  $("#editPreview").src = url;
-  $("#editPreview").classList.remove("hidden");
-});
-
-$("#videoImage").addEventListener("change", e => {
-  if (e.target.files[0]) {
-    toast("تم اختيار الصورة: " + e.target.files[0].name);
+  if (!file.type.startsWith("image/")) {
+    toast("يرجى اختيار صورة صالحة");
+    e.target.value = "";
+    return;
   }
+
+  if (editImageURL) {
+    URL.revokeObjectURL(editImageURL);
+  }
+
+  editImageURL = URL.createObjectURL(file);
+
+  $("#editPreview").src = editImageURL;
+  $("#editPreview").classList.remove("hidden");
+
+  toast("تم اختيار الصورة");
 });
 
 // حفظ الشخصيات
-$("#saveCharacter").addEventListener("click", () => {
-  const name = $("#charName").value.trim();
-  const desc = $("#charDesc").value.trim();
+$("#saveCharacter")?.addEventListener("click", () => {
+  const name = $("#charName")?.value.trim();
+  const desc = $("#charDesc")?.value.trim();
 
   if (!name || !desc) {
     toast("أدخل اسم الشخصية ووصفها");
@@ -238,6 +295,8 @@ function renderCharacters() {
   const characters = get("ai_master_characters");
   const container = $("#characterList");
 
+  if (!container) return;
+
   container.innerHTML = characters.length
     ? characters.map(item =>
         `<article class="character">
@@ -251,6 +310,7 @@ function renderCharacters() {
 // عرض الصور والأعمال في المعرض
 async function renderGallery() {
   const container = $("#galleryItems");
+  if (!container) return;
 
   container.innerHTML = "<p class='hint'>جارٍ تحميل المعرض...</p>";
 
@@ -314,7 +374,7 @@ async function renderGallery() {
   }
 }
 
-$("#themeInfo").addEventListener("click", () =>
+$("#themeInfo")?.addEventListener("click", () =>
   toast("AI MASTER — منصتك الخاصة")
 );
 
