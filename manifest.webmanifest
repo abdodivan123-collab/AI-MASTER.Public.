@@ -1,0 +1,11 @@
+{
+  "name": "AI MASTER",
+  "short_name": "AI MASTER",
+  "description": "استوديو الصور والفيديو الخاص بك",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#09090f",
+  "theme_color": "#09090f",
+  "lang": "ar",
+  "dir": "rtl"
+}
