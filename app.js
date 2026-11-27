@@ -177,7 +177,7 @@ async function getImages() {
 
 
 // =====================================
-// توليد الصور عبر Cloudflare Workers AI
+// توليد الصور مع اختيار الشخصية
 // =====================================
 
 $("#imageDemo")?.addEventListener("click", async () => {
@@ -188,8 +188,31 @@ $("#imageDemo")?.addEventListener("click", async () => {
     return;
   }
 
-  if (prompt.length > 2048) {
-    toast("الوصف يجب ألا يتجاوز 2048 حرفاً");
+  const characterSelect = $("#imageCharacter");
+  const characters = get("ai_master_characters");
+
+  let selectedCharacter = null;
+
+  if (characterSelect && characterSelect.value !== "") {
+    const index = Number(characterSelect.value);
+
+    if (Number.isInteger(index) && characters[index]) {
+      selectedCharacter = characters[index];
+    }
+  }
+
+  let finalPrompt = prompt;
+
+  if (selectedCharacter) {
+    finalPrompt +=
+      "\n\nCharacter reference:\n" +
+      "Character name: " + selectedCharacter.name + "\n" +
+      "Character description: " + selectedCharacter.desc + "\n" +
+      "Keep the character's facial features, age, hairstyle and identity consistent with this description.";
+  }
+
+  if (finalPrompt.length > 2048) {
+    toast("الوصف مع الشخصية يتجاوز 2048 حرفاً. اختصر الوصف.");
     return;
   }
 
@@ -201,13 +224,17 @@ $("#imageDemo")?.addEventListener("click", async () => {
 
   btn.disabled = true;
 
-  if (msg) msg.textContent = "جارٍ توليد الصورة، يرجى الانتظار...";
+  if (msg) {
+    msg.textContent = selectedCharacter
+      ? "جارٍ توليد الصورة باستخدام الشخصية " + selectedCharacter.name + "..."
+      : "جارٍ توليد الصورة، يرجى الانتظار...";
+  }
 
   try {
     const response = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ prompt: finalPrompt })
     });
 
     const contentType = response.headers.get("content-type") || "";
@@ -229,7 +256,8 @@ $("#imageDemo")?.addEventListener("click", async () => {
     const imageItem = {
       id: Date.now().toString(),
       prompt: originalPrompt,
-      enhancedPrompt: prompt !== originalPrompt ? prompt : null,
+      enhancedPrompt: finalPrompt !== originalPrompt ? finalPrompt : null,
+      characterName: selectedCharacter ? selectedCharacter.name : null,
       image: data.image,
       ratio: $("#ratio")?.value || "9:16 عمودي",
       date: new Date().toLocaleString("ar")
@@ -394,6 +422,8 @@ $("#saveCharacter")?.addEventListener("click", () => {
   $("#charDesc").value = "";
 
   renderCharacters();
+  renderCharacterSelector();
+
   toast("تم حفظ الشخصية على هذا الجهاز");
 });
 
@@ -431,6 +461,39 @@ function renderCharacters() {
         </article>`
       ).join("")
     : "<p class='hint'>لم تحفظ أي شخصية بعد.</p>";
+}
+
+
+// =====================================
+// قائمة اختيار الشخصية في استوديو الصور
+// =====================================
+
+function renderCharacterSelector() {
+  const select = $("#imageCharacter");
+
+  if (!select) return;
+
+  const characters = get("ai_master_characters");
+  const previousValue = select.value;
+
+  select.innerHTML =
+    '<option value="">بدون شخصية</option>';
+
+  characters.forEach((character, index) => {
+    const option = document.createElement("option");
+
+    option.value = String(index);
+    option.textContent = character.name;
+
+    select.appendChild(option);
+  });
+
+  if (
+    previousValue !== "" &&
+    characters[Number(previousValue)]
+  ) {
+    select.value = previousValue;
+  }
 }
 
 
@@ -746,6 +809,12 @@ async function renderGallery() {
       );
 
       card.append(image, title, description, date, actions);
+
+      if (item.characterName) {
+        const characterInfo = document.createElement("small");
+        characterInfo.textContent = "الشخصية: " + item.characterName;
+        card.appendChild(characterInfo);
+      }
 
       if (item.enhancedPrompt) {
         const details = document.createElement("details");
@@ -1155,6 +1224,7 @@ async function renderSavedVideos(existingVideos = null) {
 setupFlowStudio();
 
 renderCharacters();
+renderCharacterSelector();
 renderGallery();
 
 if ("serviceWorker" in navigator) {
