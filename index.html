@@ -1,3 +1,4 @@
+
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -11,9 +12,13 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="brand-mark">✦</span><div><b>AI MASTER</b><small>IMAGE & VIDEO STUDIO</small></div></div>
+    <div class="brand">
+      <span class="brand-mark">✦</span>
+      <div><b>AI MASTER</b><small>IMAGE & VIDEO STUDIO</small></div>
+    </div>
     <button class="icon-btn" id="themeInfo" aria-label="معلومات">ⓘ</button>
   </header>
+
   <main>
     <section class="hero">
       <div class="eyebrow">استوديو الإبداع الخاص بك</div>
@@ -26,7 +31,10 @@
     </section>
 
     <section class="section">
-      <div class="section-head"><div><span class="eyebrow">WORKSPACE</span><h2>مساحة العمل</h2></div><span class="status">نسخة أولية</span></div>
+      <div class="section-head">
+        <div><span class="eyebrow">WORKSPACE</span><h2>مساحة العمل</h2></div>
+        <span class="status">نسخة أولية</span>
+      </div>
       <div class="tiles">
         <button class="tile" data-page="images"><span class="tile-icon">▧</span><b>توليد الصور</b><small>من وصف نصي</small></button>
         <button class="tile" data-page="videos"><span class="tile-icon">▶</span><b>توليد الفيديو</b><small>نص أو صورة إلى فيديو</small></button>
@@ -36,33 +44,62 @@
     </section>
 
     <section class="panel page active" id="home">
-      <div class="section-head"><div><span class="eyebrow">PRIVATE LIBRARY</span><h2>أحدث أعمالك</h2></div><button class="text-btn" data-page="gallery">عرض المعرض ←</button></div>
-      <div id="recent" class="empty"><span>▧</span><b>معرضك ينتظرك</b><small>ستظهر هنا الصور التي تحفظها في هذه النسخة التجريبية.</small></div>
+      <div class="section-head">
+        <div><span class="eyebrow">PRIVATE LIBRARY</span><h2>أحدث أعمالك</h2></div>
+        <button class="text-btn" data-page="gallery">عرض المعرض ←</button>
+      </div>
+      <div id="recent" class="empty">
+        <span>▧</span><b>معرضك ينتظرك</b>
+        <small>ستظهر هنا الصور التي تحفظها في هذه النسخة التجريبية.</small>
+      </div>
     </section>
 
     <section class="panel page" id="images">
-      <span class="eyebrow">IMAGE STUDIO</span><h2>إنشاء صورة</h2>
+      <span class="eyebrow">IMAGE STUDIO</span>
+      <h2>إنشاء صورة</h2>
       <label for="imagePrompt">وصف الصورة</label>
       <textarea id="imagePrompt" placeholder="صف المشهد الذي تريد إنشاءه بالتفصيل..."></textarea>
-      <div class="form-row"><label>نسبة الأبعاد</label><select id="ratio"><option>9:16 عمودي</option><option>1:1 مربع</option><option>16:9 أفقي</option></select></div>
-      <div class="notice">محرك توليد الصور غير مربوط بعد. هذه الواجهة جاهزة لإضافة المحرك في المرحلة التالية.</div>
-      <button class="primary full" id="imageDemo">حفظ الوصف في قائمة العمل</button>
+
+      <div class="form-row">
+        <label>نسبة الأبعاد</label>
+        <select id="ratio">
+          <option>9:16 عمودي</option>
+          <option>1:1 مربع</option>
+          <option>16:9 أفقي</option>
+        </select>
+      </div>
+
+      <div class="notice">
+        محرك FLUX AI جاهز. اكتب وصف الصورة واضغط على زر التوليد.
+      </div>
+
+      <button class="primary full" id="imageDemo">✨ توليد الصورة الآن</button>
       <p id="imageMsg" class="hint"></p>
     </section>
 
     <section class="panel page" id="videos">
-      <span class="eyebrow">VIDEO STUDIO</span><h2>إنشاء فيديو</h2>
+      <span class="eyebrow">VIDEO STUDIO</span>
+      <h2>إنشاء فيديو</h2>
       <label for="videoPrompt">وصف الحركة والمشهد</label>
       <textarea id="videoPrompt" placeholder="صف ما يحدث في الفيديو وحركة الكاميرا..."></textarea>
-      <label class="upload-box"><input type="file" id="videoImage" accept="image/*"><span>＋</span><b>اختر صورة لتحريكها</b><small>اختياري — JPG أو PNG أو WEBP</small></label>
-      <div class="notice">توليد الفيديو يحتاج إلى محرك GPU خارجي أو نموذج يعمل على جهاز قوي. لم يتم تفعيل التوليد بعد.</div>
+      <label class="upload-box">
+        <input type="file" id="videoImage" accept="image/*">
+        <span>＋</span><b>اختر صورة لتحريكها</b>
+        <small>اختياري — JPG أو PNG أو WEBP</small>
+      </label>
+      <div class="notice">توليد الفيديو يحتاج إلى محرك خارجي. لم يتم تفعيل التوليد بعد.</div>
       <button class="primary full" id="videoDemo">حفظ إعدادات الفيديو</button>
       <p id="videoMsg" class="hint"></p>
     </section>
 
     <section class="panel page" id="edit">
-      <span class="eyebrow">IMAGE EDITOR</span><h2>تعديل صورة</h2>
-      <label class="upload-box"><input type="file" id="editFile" accept="image/*"><span>＋</span><b>ارفع صورة من هاتفك</b><small>ستظهر معاينتها هنا</small></label>
+      <span class="eyebrow">IMAGE EDITOR</span>
+      <h2>تعديل صورة</h2>
+      <label class="upload-box">
+        <input type="file" id="editFile" accept="image/*">
+        <span>＋</span><b>ارفع صورة من هاتفك</b>
+        <small>ستظهر معاينتها هنا</small>
+      </label>
       <img id="editPreview" class="preview hidden" alt="معاينة الصورة المختارة">
       <label for="editPrompt">ما التعديل المطلوب؟</label>
       <textarea id="editPrompt" placeholder="اكتب التغييرات التي تريدها..."></textarea>
@@ -70,16 +107,20 @@
     </section>
 
     <section class="panel page" id="characters">
-      <span class="eyebrow">CHARACTER VAULT</span><h2>شخصياتي</h2>
-      <label for="charName">اسم الشخصية</label><input id="charName" placeholder="مثلاً: ليلى">
-      <label for="charDesc">الوصف الثابت</label><textarea id="charDesc" placeholder="الملامح، الشعر، الملابس، العمر البالغ، السمات الثابتة..."></textarea>
+      <span class="eyebrow">CHARACTER VAULT</span>
+      <h2>شخصياتي</h2>
+      <label for="charName">اسم الشخصية</label>
+      <input id="charName" placeholder="مثلاً: ليلى">
+      <label for="charDesc">الوصف الثابت</label>
+      <textarea id="charDesc" placeholder="الملامح، الشعر، الملابس، العمر البالغ، السمات الثابتة..."></textarea>
       <button class="primary full" id="saveCharacter">حفظ الشخصية</button>
       <div id="characterList" class="stack"></div>
     </section>
 
     <section class="panel page" id="gallery">
-      <span class="eyebrow">MY PRIVATE GALLERY</span><h2>معرضي الخاص</h2>
-      <div class="notice">في هذه النسخة، البيانات تحفظ محلياً على هذا المتصفح فقط. لا ترفع صورك إلى خادم.</div>
+      <span class="eyebrow">MY PRIVATE GALLERY</span>
+      <h2>معرضي الخاص</h2>
+      <div class="notice">في هذه النسخة، البيانات تحفظ محلياً على هذا المتصفح فقط.</div>
       <div id="galleryItems" class="gallery-grid"></div>
     </section>
   </main>
@@ -90,6 +131,7 @@
     <button class="nav-item" data-page="videos"><span>▶</span><small>الفيديو</small></button>
     <button class="nav-item" data-page="gallery"><span>▦</span><small>المعرض</small></button>
   </nav>
+
   <div class="toast" id="toast"></div>
   <script src="app.js"></script>
 </body>
