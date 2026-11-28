@@ -1,208 +1,352 @@
+/* AI MASTER — app.js
+   يحافظ على واجهة المشروع الحالية ولا يغيّر API توليد الصور.
+*/
+"use strict";
 
-const $ = s => document.querySelector(s);
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
-const pages = ["home", "images", "videos", "edit", "characters", "gallery"];
+const PAGE_IDS = ["home", "images", "videos", "edit", "characters", "gallery"];
+const IMAGE_DB_NAME = "AIMASTER_DB";
+const VIDEO_DB_NAME = "AIMASTER_VIDEO_DB";
+const FLOW_URL = "https://labs.google/fx/tools/flow";
+const IMAGE_STORE = "images";
+const VIDEO_STORE = "videos";
+
+let imageDBPromise = null;
+let videoDBPromise = null;
+let videoImageURL = null;
+let editImageURL = null;
+let activeModalURL = null;
+let galleryVideoURLs = new Set();
+let currentGalleryFilter = "all";
+let originalImagePrompt = null;
+let enhancedImagePrompt = null;
+let promptIsEnhanced = false;
+let toastTimer = null;
+
+function toast(message) {
+  const node = $("#toast");
+  if (!node) return;
+  node.textContent = String(message);
+  node.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => node.classList.remove("show"), 2600);
+}
+
+function readStorage(key, fallback = []) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key));
+    return value ?? fallback;
+  } catch (error) {
+    console.warn("تعذر قراءة التخزين المحلي:", key, error);
+    return fallback;
+  }
+}
+
+function writeStorage(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (error) {
+    console.error("تعذر الحفظ محلياً:", error);
+    toast("مساحة التخزين ممتلئة أو غير متاحة");
+    return false;
+  }
+}
 
 function showPage(id) {
-  pages.forEach(p => $("#" + p)?.classList.toggle("active", p === id));
+  if (!PAGE_IDS.includes(id)) return;
 
-  document.querySelectorAll("[data-page]").forEach(b =>
-    b.classList.toggle("selected", b.dataset.page === id)
-  );
+  PAGE_IDS.forEach(page => {
+    const section = $("#" + page);
+    if (section) section.classList.toggle("active", page === id);
+  });
+
+  $$("[data-page]").forEach(button => {
+    const selected = button.dataset.page === id;
+    button.classList.toggle("selected", selected);
+    if (button.classList.contains("nav-item")) {
+      if (selected) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    }
+  });
 
   window.scrollTo({ top: 0, behavior: "smooth" });
 
   if (id === "gallery") renderGallery();
+  if (id === "home") renderRecent();
+  if (id === "characters") renderCharacters();
 }
 
-document.querySelectorAll("[data-page]").forEach(b =>
-  b.addEventListener("click", () => showPage(b.dataset.page))
-);
+$$("[data-page]").forEach(button => {
+  button.addEventListener("click", () => showPage(button.dataset.page));
+});
 
-function toast(msg) {
-  const t = $("#toast");
-  if (!t) return;
-  t.textContent = msg;
-  t.classList.add("show");
-  setTimeout(() => t.classList.remove("show"), 2300);
+$("#themeInfo")?.addEventListener("click", () => {
+  toast("AI MASTER — استوديوك الخاص للصور والفيديو");
+});
+
+// ---------- IndexedDB helpers ----------
+function openDatabase(name, storeName, cacheSetter) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(name, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(storeName)) {
+        db.createObjectStore(storeName, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => {
+      cacheSetter(null);
+      reject(request.error || new Error("تعذر فتح قاعدة البيانات"));
+    };
+  });
 }
 
-const get = (k, d = []) => {
-  try {
-    return JSON.parse(localStorage.getItem(k)) || d;
-  } catch {
-    return d;
-  }
-};
+function openImageDB() {
+  if (!("indexedDB" in window)) return Promise.reject(new Error("التخزين المحلي غير مدعوم"));
+  if (!imageDBPromise) imageDBPromise = openDatabase(IMAGE_DB_NAME, IMAGE_STORE, value => imageDBPromise = value);
+  return imageDBPromise;
+}
 
-const set = (k, v) =>
-  localStorage.setItem(k, JSON.stringify(v));
+function openVideoDB() {
+  if (!("indexedDB" in window)) return Promise.reject(new Error("التخزين المحلي غير مدعوم"));
+  if (!videoDBPromise) videoDBPromise = openDatabase(VIDEO_DB_NAME, VIDEO_STORE, value => videoDBPromise = value);
+  return videoDBPromise;
+}
 
+async function putRecord(dbPromise, storeName, item) {
+  const db = await dbPromise;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readwrite");
+    tx.objectStore(storeName).put(item);
+    tx.oncomplete = () => resolve(item);
+    tx.onerror = () => reject(tx.error || new Error("تعذر الحفظ"));
+    tx.onabort = () => reject(tx.error || new Error("تم إلغاء الحفظ"));
+  });
+}
 
-// =====================================
-// تحسين أوصاف الصور
-// =====================================
+async function getAllRecords(dbPromise, storeName) {
+  const db = await dbPromise;
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(storeName, "readonly").objectStore(storeName).getAll();
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error || new Error("تعذر قراءة البيانات"));
+  });
+}
 
-let originalImagePrompt = null;
-let promptIsEnhanced = false;
+async function deleteRecord(dbPromise, storeName, id) {
+  const db = await dbPromise;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readwrite");
+    tx.objectStore(storeName).delete(id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error || new Error("تعذر الحذف"));
+  });
+}
 
+const saveImage = item => putRecord(openImageDB(), IMAGE_STORE, item);
+const getImages = () => getAllRecords(openImageDB(), IMAGE_STORE);
+const deleteImage = id => deleteRecord(openImageDB(), IMAGE_STORE, id);
+const saveVideoFile = item => putRecord(openVideoDB(), VIDEO_STORE, item);
+const readVideoFiles = () => getAllRecords(openVideoDB(), VIDEO_STORE);
+const removeVideoFile = id => deleteRecord(openVideoDB(), VIDEO_STORE, id);
+
+// ---------- Prompt enhancement ----------
 const realismInstructions =
-  "\n\nPhotorealistic professional photograph. Preserve the exact subject, appearance, clothing, pose, objects and background requested by the user. Natural anatomy, realistic skin and hair texture, accurate lighting and shadows, natural colors, sharp details. No cartoon, anime, CGI, distorted anatomy, extra fingers or unrequested objects.";
+  "\n\nPhotorealistic professional photograph. Preserve the requested subject, appearance, clothing, pose, objects and background. Natural anatomy, realistic skin and hair texture, accurate lighting and shadows, natural colors, sharp details. No cartoon, anime, CGI, distorted anatomy, extra fingers or unrequested objects.";
 
 function setupPromptEnhancer() {
   const field = $("#imagePrompt");
-
   if (!field || $("#promptTools")) return;
 
   const tools = document.createElement("div");
   tools.id = "promptTools";
-  tools.style.cssText =
-    "display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;";
+  tools.className = "prompt-tools";
 
-  const enhanceButton = document.createElement("button");
-  enhanceButton.type = "button";
-  enhanceButton.textContent = "✨ تحسين واقعية الوصف";
-  enhanceButton.style.cssText =
-    "padding:12px;border:0;border-radius:10px;background:#7048e8;color:white;font-weight:bold;";
+  const enhance = document.createElement("button");
+  enhance.type = "button";
+  enhance.className = "secondary";
+  enhance.textContent = "✨ تحسين واقعية الوصف";
 
-  const restoreButton = document.createElement("button");
-  restoreButton.type = "button";
-  restoreButton.textContent = "↩ استعادة الوصف الأصلي";
-  restoreButton.style.cssText =
-    "padding:12px;border:1px solid #888;border-radius:10px;background:transparent;color:inherit;";
+  const restore = document.createElement("button");
+  restore.type = "button";
+  restore.className = "secondary";
+  restore.textContent = "↩ استعادة الوصف الأصلي";
 
-  enhanceButton.addEventListener("click", () => {
-    const current = field.value.trim();
+  field.addEventListener("input", () => {
+    promptIsEnhanced = enhancedImagePrompt !== null && field.value === enhancedImagePrompt;
+  });
 
-    if (!current) {
-      toast("اكتب وصف الصورة أولاً");
-      return;
+  enhance.addEventListener("click", () => {
+    let current = field.value.trim();
+    if (!current) return toast("اكتب وصف الصورة أولاً");
+
+    // إذا كان النص الحالي هو النسخة المحسّنة، لا نكرر التعليمات.
+    if (enhancedImagePrompt !== null && current === enhancedImagePrompt) {
+      return toast("الوصف محسّن بالفعل");
     }
 
-    if (promptIsEnhanced) {
-      toast("الوصف محسّن بالفعل");
-      return;
+    // إذا عدّل المستخدم النسخة المحسّنة، أزل ذيل التعليمات قبل إعادة التحسين.
+    if (current.endsWith(realismInstructions.trim())) {
+      current = current.slice(0, -realismInstructions.trim().length).trim();
     }
 
-    if (current.length > 2048) {
-      toast("الوصف يتجاوز حد 2048 حرفاً");
-      return;
+    const candidate = current + realismInstructions;
+    if (candidate.length > 2048) {
+      return toast("الوصف طويل جداً؛ اختصره قليلاً قبل التحسين");
     }
 
-    const remaining = 2048 - current.length;
-
-    if (remaining < 40) {
-      toast("الوصف طويل جداً");
-      return;
-    }
-
-    originalImagePrompt = current;
-    field.value = current + realismInstructions.slice(0, remaining);
+    if (originalImagePrompt === null) originalImagePrompt = current;
+    field.value = candidate;
+    enhancedImagePrompt = candidate;
     promptIsEnhanced = true;
-
-    toast("تم تحسين تعليمات الواقعية");
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+    toast("تم تحسين واقعية الوصف");
   });
 
-  restoreButton.addEventListener("click", () => {
-    if (originalImagePrompt !== null) {
-      field.value = originalImagePrompt;
-    }
-
+  restore.addEventListener("click", () => {
+    if (originalImagePrompt === null) return toast("لا يوجد وصف أصلي محفوظ للاستعادة");
+    field.value = originalImagePrompt;
     originalImagePrompt = null;
+    enhancedImagePrompt = null;
     promptIsEnhanced = false;
-
-    toast("تم استعادة الوصف الأصلي");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    toast("تمت استعادة الوصف الأصلي");
   });
 
-  tools.append(enhanceButton, restoreButton);
+  tools.append(enhance, restore);
   field.insertAdjacentElement("afterend", tools);
 }
 
-setupPromptEnhancer();
-
-
-// =====================================
-// قاعدة بيانات الصور
-// =====================================
-
-let dbPromise;
-
-function openImageDB() {
-  if (dbPromise) return dbPromise;
-
-  dbPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open("AIMASTER_DB", 1);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-
-      if (!db.objectStoreNames.contains("images")) {
-        db.createObjectStore("images", { keyPath: "id" });
-      }
-    };
-
-    request.onsuccess = () => resolve(request.result);
-
-    request.onerror = () => {
-      dbPromise = null;
-      reject(request.error);
-    };
-  });
-
-  return dbPromise;
+// ---------- Characters ----------
+function getCharacters() {
+  const data = readStorage("ai_master_characters", []);
+  return Array.isArray(data) ? data.filter(item => item && typeof item === "object") : [];
 }
 
-async function saveImage(item) {
-  const db = await openImageDB();
+function renderCharacterSelector() {
+  const select = $("#imageCharacter");
+  if (!select) return;
 
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction("images", "readwrite");
-    tx.objectStore("images").put(item);
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
+  const previous = select.value;
+  const characters = getCharacters();
+  select.innerHTML = '<option value="">بدون شخصية</option>';
+
+  characters.forEach((character, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = character.name || `شخصية ${index + 1}`;
+    select.appendChild(option);
   });
+
+  if (previous !== "" && characters[Number(previous)]) select.value = previous;
 }
 
-async function getImages() {
-  const db = await openImageDB();
+function renderCharacters() {
+  const container = $("#characterList");
+  if (!container) return;
+  const characters = getCharacters();
+  container.replaceChildren();
 
-  return new Promise((resolve, reject) => {
-    const request = db.transaction("images", "readonly")
-      .objectStore("images").getAll();
-
-    request.onsuccess = () => resolve(request.result || []);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-
-// =====================================
-// توليد الصور مع اختيار الشخصية
-// =====================================
-
-$("#imageDemo")?.addEventListener("click", async () => {
-  const prompt = $("#imagePrompt")?.value.trim();
-
-  if (!prompt) {
-    toast("اكتب وصف الصورة أولاً");
+  if (!characters.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "لم تحفظ أي شخصية بعد.";
+    container.appendChild(empty);
     return;
   }
 
+  characters.forEach((character, index) => {
+    const card = document.createElement("article");
+    card.className = "character";
+
+    const name = document.createElement("b");
+    name.textContent = character.name || `شخصية ${index + 1}`;
+
+    const description = document.createElement("p");
+    description.textContent = character.desc || "";
+
+    const actions = document.createElement("div");
+    actions.className = "gallery-actions";
+
+    const useButton = document.createElement("button");
+    useButton.type = "button";
+    useButton.className = "gallery-action";
+    useButton.textContent = "استخدام في الصور";
+    useButton.addEventListener("click", () => {
+      renderCharacterSelector();
+      const select = $("#imageCharacter");
+      if (select) select.value = String(index);
+      showPage("images");
+      toast("تم اختيار الشخصية");
+    });
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "gallery-action danger";
+    deleteButton.textContent = "حذف";
+    deleteButton.addEventListener("click", () => {
+      if (!confirm("هل تريد حذف هذه الشخصية؟")) return;
+      const updated = getCharacters();
+      updated.splice(index, 1);
+      if (writeStorage("ai_master_characters", updated)) {
+        renderCharacters();
+        renderCharacterSelector();
+        toast("تم حذف الشخصية");
+      }
+    });
+
+    actions.append(useButton, deleteButton);
+    card.append(name, description, actions);
+    container.appendChild(card);
+  });
+}
+
+$("#saveCharacter")?.addEventListener("click", () => {
+  const nameField = $("#charName");
+  const descField = $("#charDesc");
+  const name = nameField?.value.trim();
+  const desc = descField?.value.trim();
+
+  if (!name || !desc) return toast("أدخل اسم الشخصية ووصفها");
+  if (name.length > 60 || desc.length > 1500) return toast("تحقق من طول الاسم والوصف");
+
+  const characters = getCharacters();
+  if (characters.some(item => item.name?.toLowerCase() === name.toLowerCase())) {
+    return toast("يوجد اسم مطابق؛ اختر اسماً آخر");
+  }
+
+  characters.push({ id: crypto.randomUUID?.() || String(Date.now()), name, desc, createdAt: new Date().toISOString() });
+  if (writeStorage("ai_master_characters", characters)) {
+    nameField.value = "";
+    descField.value = "";
+    renderCharacters();
+    renderCharacterSelector();
+    toast("تم حفظ الشخصية على هذا الجهاز");
+  }
+});
+
+// ---------- Image generation ----------
+$("#imageDemo")?.addEventListener("click", async () => {
+  const promptField = $("#imagePrompt");
+  const prompt = promptField?.value.trim();
+  const button = $("#imageDemo");
+  const message = $("#imageMsg");
+
+  if (!prompt) return toast("اكتب وصف الصورة أولاً");
+
+  const characters = getCharacters();
   const characterSelect = $("#imageCharacter");
-  const characters = get("ai_master_characters");
-
   let selectedCharacter = null;
-
   if (characterSelect && characterSelect.value !== "") {
     const index = Number(characterSelect.value);
-
-    if (Number.isInteger(index) && characters[index]) {
-      selectedCharacter = characters[index];
-    }
+    if (Number.isInteger(index)) selectedCharacter = characters[index] || null;
   }
 
   let finalPrompt = prompt;
-
   if (selectedCharacter) {
     finalPrompt +=
       "\n\nCharacter reference:\n" +
@@ -212,23 +356,13 @@ $("#imageDemo")?.addEventListener("click", async () => {
   }
 
   if (finalPrompt.length > 2048) {
-    toast("الوصف مع الشخصية يتجاوز 2048 حرفاً. اختصر الوصف.");
-    return;
+    return toast("الوصف مع الشخصية يتجاوز 2048 حرفاً؛ اختصره");
   }
 
-  const originalPrompt =
-    originalImagePrompt !== null ? originalImagePrompt : prompt;
-
-  const btn = $("#imageDemo");
-  const msg = $("#imageMsg");
-
-  btn.disabled = true;
-
-  if (msg) {
-    msg.textContent = selectedCharacter
-      ? "جارٍ توليد الصورة باستخدام الشخصية " + selectedCharacter.name + "..."
-      : "جارٍ توليد الصورة، يرجى الانتظار...";
-  }
+  if (!button) return;
+  button.disabled = true;
+  button.textContent = "⏳ جارٍ التوليد...";
+  if (message) message.textContent = "جارٍ إرسال الوصف إلى محرك الصور...";
 
   try {
     const response = await fetch("/api/generate", {
@@ -238,293 +372,202 @@ $("#imageDemo")?.addEventListener("click", async () => {
     });
 
     const contentType = response.headers.get("content-type") || "";
-
     if (!contentType.includes("application/json")) {
-      throw new Error("استجابة الخادم غير صحيحة");
+      throw new Error("استجابة الخادم غير صحيحة. تحقق من اتصال الموقع.");
     }
 
     const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || "فشل توليد الصورة");
-    }
-
+    if (!response.ok) throw new Error(data.error || "فشل توليد الصورة");
     if (!data.image || !data.image.startsWith("data:image/")) {
-      throw new Error("لم تصل صورة صالحة");
+      throw new Error("لم تصل صورة صالحة من الخادم");
     }
 
-    const imageItem = {
-      id: Date.now().toString(),
-      prompt: originalPrompt,
-      enhancedPrompt: finalPrompt !== originalPrompt ? finalPrompt : null,
-      characterName: selectedCharacter ? selectedCharacter.name : null,
+    const item = {
+      id: String(Date.now()),
+      prompt,
+      enhancedPrompt: finalPrompt !== prompt ? finalPrompt : null,
+      characterName: selectedCharacter?.name || null,
       image: data.image,
       ratio: $("#ratio")?.value || "9:16 عمودي",
       date: new Date().toLocaleString("ar")
     };
 
-    await saveImage(imageItem);
+    await saveImage(item);
+    const image = $("#generatedImage") || document.createElement("img");
+    image.id = "generatedImage";
+    image.alt = "الصورة التي تم توليدها";
+    image.className = "generated-image";
+    image.src = data.image;
+    if (!image.isConnected) (message || button).insertAdjacentElement("afterend", image);
 
-    let img = $("#generatedImage");
-
-    if (!img) {
-      img = document.createElement("img");
-      img.id = "generatedImage";
-      img.style.cssText =
-        "display:block;width:100%;max-width:600px;margin:15px auto;border-radius:12px;";
-
-      if (msg) msg.after(img);
-    }
-
-    img.src = data.image;
-
-    if (msg) msg.textContent = "تم توليد الصورة وحفظها بنجاح!";
-
-    toast("تم حفظ الصورة في المعرض");
-
+    if (message) message.textContent = "تم توليد الصورة وحفظها في معرضك.";
+    toast("تم حفظ الصورة بنجاح");
+    renderRecent();
   } catch (error) {
-    if (msg) msg.textContent = "حدث خطأ: " + error.message;
+    console.error(error);
+    if (message) message.textContent = "حدث خطأ: " + (error.message || "تعذر توليد الصورة");
     toast("تعذر توليد الصورة");
-
   } finally {
-    btn.disabled = false;
+    button.disabled = false;
+    button.textContent = "✨ توليد الصورة الآن";
   }
 });
 
-
-// =====================================
-// معاينة صورة الفيديو
-// =====================================
-
-let videoImageURL = null;
-
-$("#videoImage")?.addEventListener("change", e => {
-  const file = e.target.files?.[0];
+// ---------- Video input preview and Flow ----------
+$("#videoImage")?.addEventListener("change", event => {
+  const file = event.target.files?.[0];
   const preview = $("#videoPreview");
-  const msg = $("#videoMsg");
-
   if (!file || !preview) return;
-
   if (!file.type.startsWith("image/")) {
-    toast("يرجى اختيار ملف صورة صالح");
-    e.target.value = "";
-    return;
+    event.target.value = "";
+    return toast("اختر ملف صورة صالحاً");
   }
-
   if (file.size > 10 * 1024 * 1024) {
-    toast("حجم الصورة يجب ألا يتجاوز 10 ميغابايت");
-    e.target.value = "";
-    return;
+    event.target.value = "";
+    return toast("حجم الصورة يجب ألا يتجاوز 10 ميغابايت");
   }
-
   if (videoImageURL) URL.revokeObjectURL(videoImageURL);
-
   videoImageURL = URL.createObjectURL(file);
   preview.src = videoImageURL;
   preview.classList.remove("hidden");
-
-  if (msg) msg.textContent = "تم اختيار الصورة بنجاح.";
-
-  toast("تم تحميل الصورة ومعاينتها");
+  toast("تم اختيار صورة الفيديو");
 });
-
-
-// =====================================
-// حفظ إعدادات الفيديو
-// =====================================
 
 $("#videoDemo")?.addEventListener("click", () => {
   const prompt = $("#videoPrompt")?.value.trim();
-  const engine = $("#videoEngine")?.value || "auto";
-  const duration = $("#videoDuration")?.value || "8";
-  const imageFile = $("#videoImage")?.files?.[0] || null;
+  if (!prompt) return toast("اكتب وصف الفيديو أولاً");
 
-  if (!prompt) {
-    toast("اكتب وصف الفيديو أولاً");
-    return;
-  }
-
-  const items = get("ai_master_prompts");
-
+  const items = readStorage("ai_master_prompts", []);
   items.unshift({
-    type: "فيديو",
+    id: String(Date.now()),
+    type: "وصف فيديو",
     prompt,
-    engine,
-    duration,
-    imageName: imageFile ? imageFile.name : null,
+    engine: $("#videoEngine")?.value || "auto",
+    duration: $("#videoDuration")?.value || "8",
+    imageName: $("#videoImage")?.files?.[0]?.name || null,
     date: new Date().toLocaleString("ar")
   });
 
-  set("ai_master_prompts", items);
-
-  const msg = $("#videoMsg");
-
-  if (msg) {
-    msg.textContent =
-      "تم حفظ إعدادات الفيديو. استخدم Google Flow لتوليد الفيديو.";
-  }
-
+  if (!writeStorage("ai_master_prompts", items)) return;
+  const message = $("#videoMsg");
+  if (message) message.textContent = "تم حفظ وصف الفيديو. افتح Google Flow لإنشاء الفيديو ثم استورده هنا.";
   toast("تم حفظ إعدادات الفيديو");
+  renderGallery();
 });
 
+function setupFlowStudio() {
+  const button = $("#videoDemo");
+  if (!button || $("#flowStudioTools")) return;
 
-// =====================================
-// معاينة الصورة المراد تعديلها
-// =====================================
+  const panel = document.createElement("div");
+  panel.id = "flowStudioTools";
+  panel.className = "flow-tools";
 
-let editImageURL = null;
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.className = "secondary";
+  copyButton.textContent = "📋 نسخ وصف الفيديو";
 
-$("#editFile")?.addEventListener("change", e => {
-  const file = e.target.files?.[0];
+  const flowButton = document.createElement("button");
+  flowButton.type = "button";
+  flowButton.className = "primary";
+  flowButton.textContent = "🌐 فتح Google Flow";
 
-  if (!file) return;
+  const heading = document.createElement("b");
+  heading.textContent = "استيراد فيديو من الهاتف";
 
-  if (!file.type.startsWith("image/")) {
-    toast("يرجى اختيار صورة صالحة");
-    e.target.value = "";
-    return;
-  }
+  const hint = document.createElement("small");
+  hint.textContent = "اختر فيديو نزّلته من Google Flow لحفظه في معرض AI MASTER.";
 
-  if (editImageURL) URL.revokeObjectURL(editImageURL);
+  const upload = document.createElement("input");
+  upload.type = "file";
+  upload.accept = "video/*";
+  upload.id = "videoImportFile";
+  upload.setAttribute("aria-label", "اختيار فيديو من الهاتف");
 
-  editImageURL = URL.createObjectURL(file);
+  copyButton.addEventListener("click", async () => {
+    const prompt = $("#videoPrompt")?.value.trim();
+    if (!prompt) return toast("اكتب وصف الفيديو أولاً");
+    const duration = $("#videoDuration")?.value || "8";
+    const text = `${prompt}\n\nمدة الفيديو المستهدفة: ${duration} ثوانٍ.`;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("تم نسخ وصف الفيديو");
+    } catch {
+      const temporary = document.createElement("textarea");
+      temporary.value = text;
+      document.body.appendChild(temporary);
+      temporary.select();
+      const copied = document.execCommand("copy");
+      temporary.remove();
+      toast(copied ? "تم نسخ الوصف" : "تعذر النسخ");
+    }
+  });
 
+  flowButton.addEventListener("click", () => {
+    const opened = window.open(FLOW_URL, "_blank", "noopener,noreferrer");
+    if (!opened) toast("افتح Google Flow من المتصفح");
+  });
+
+  upload.addEventListener("change", async () => {
+    const file = upload.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("video/")) {
+      upload.value = "";
+      return toast("الملف المختار ليس فيديو");
+    }
+    if (file.size > 150 * 1024 * 1024) {
+      upload.value = "";
+      return toast("حجم الفيديو أكبر من 150 ميغابايت");
+    }
+
+    try {
+      await saveVideoFile({
+        id: "video-" + Date.now(),
+        name: file.name,
+        blob: file,
+        prompt: $("#videoPrompt")?.value.trim() || "",
+        date: new Date().toLocaleString("ar"),
+        type: file.type
+      });
+      upload.value = "";
+      if ($("#videoMsg")) $("#videoMsg").textContent = "تم حفظ الفيديو في معرضك.";
+      toast("تم حفظ الفيديو بنجاح");
+      await renderGallery();
+      renderRecent();
+    } catch (error) {
+      console.error(error);
+      toast("تعذر حفظ الفيديو؛ تحقق من مساحة الهاتف");
+    }
+  });
+
+  panel.append(copyButton, flowButton, heading, hint, upload);
+  button.insertAdjacentElement("afterend", panel);
+}
+
+// ---------- Image editing preview ----------
+$("#editFile")?.addEventListener("change", event => {
+  const file = event.target.files?.[0];
   const preview = $("#editPreview");
-
-  if (preview) {
-    preview.src = editImageURL;
-    preview.classList.remove("hidden");
+  if (!file || !preview) return;
+  if (!file.type.startsWith("image/")) {
+    event.target.value = "";
+    return toast("اختر صورة صالحة");
   }
-
-  toast("تم اختيار الصورة");
+  if (file.size > 15 * 1024 * 1024) {
+    event.target.value = "";
+    return toast("حجم الصورة يجب ألا يتجاوز 15 ميغابايت");
+  }
+  if (editImageURL) URL.revokeObjectURL(editImageURL);
+  editImageURL = URL.createObjectURL(file);
+  preview.src = editImageURL;
+  preview.classList.remove("hidden");
+  toast("تمت معاينة الصورة");
 });
 
-
-// =====================================
-// حفظ الشخصيات
-// =====================================
-
-$("#saveCharacter")?.addEventListener("click", () => {
-  const name = $("#charName")?.value.trim();
-  const desc = $("#charDesc")?.value.trim();
-
-  if (!name || !desc) {
-    toast("أدخل اسم الشخصية ووصفها");
-    return;
-  }
-
-  const characters = get("ai_master_characters");
-  characters.push({ name, desc });
-
-  set("ai_master_characters", characters);
-
-  $("#charName").value = "";
-  $("#charDesc").value = "";
-
-  renderCharacters();
-  renderCharacterSelector();
-
-  toast("تم حفظ الشخصية على هذا الجهاز");
-});
-
-
-// =====================================
-// حماية النصوص المعروضة
-// =====================================
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, c => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  }[c]));
-}
-
-
-// =====================================
-// عرض الشخصيات
-// =====================================
-
-function renderCharacters() {
-  const characters = get("ai_master_characters");
-  const container = $("#characterList");
-
-  if (!container) return;
-
-  container.innerHTML = characters.length
-    ? characters.map(item =>
-        `<article class="character">
-          <b>${escapeHtml(item.name)}</b>
-          <p>${escapeHtml(item.desc)}</p>
-        </article>`
-      ).join("")
-    : "<p class='hint'>لم تحفظ أي شخصية بعد.</p>";
-}
-
-
-// =====================================
-// قائمة اختيار الشخصية في استوديو الصور
-// =====================================
-
-function renderCharacterSelector() {
-  const select = $("#imageCharacter");
-
-  if (!select) return;
-
-  const characters = get("ai_master_characters");
-  const previousValue = select.value;
-
-  select.innerHTML =
-    '<option value="">بدون شخصية</option>';
-
-  characters.forEach((character, index) => {
-    const option = document.createElement("option");
-
-    option.value = String(index);
-    option.textContent = character.name;
-
-    select.appendChild(option);
-  });
-
-  if (
-    previousValue !== "" &&
-    characters[Number(previousValue)]
-  ) {
-    select.value = previousValue;
-  }
-}
-
-
-// =====================================
-// حذف الصور من قاعدة البيانات
-// =====================================
-
-async function deleteImage(id) {
-  const db = await openImageDB();
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction("images", "readwrite");
-    tx.objectStore("images").delete(id);
-
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-
-// =====================================
-// نافذة عرض الصور والفيديوهات
-// =====================================
-
-let activeModalURL = null;
-
+// ---------- Media modal, download and share ----------
 function closeMediaModal() {
-  const modal = $("#mediaModal");
-
-  if (modal) modal.remove();
-
+  $("#mediaModal")?.remove();
   if (activeModalURL) {
     URL.revokeObjectURL(activeModalURL);
     activeModalURL = null;
@@ -533,65 +576,45 @@ function closeMediaModal() {
 
 function openMediaModal(type, source, caption = "") {
   closeMediaModal();
-
   const modal = document.createElement("div");
   modal.id = "mediaModal";
-  modal.className = "media-modal open";
+  modal.className = "media-modal";
 
-  const backdrop = document.createElement("div");
+  const backdrop = document.createElement("button");
+  backdrop.type = "button";
   backdrop.className = "media-modal-backdrop";
+  backdrop.setAttribute("aria-label", "إغلاق");
   backdrop.addEventListener("click", closeMediaModal);
 
   const dialog = document.createElement("div");
   dialog.className = "media-modal-dialog";
 
   const close = document.createElement("button");
+  close.type = "button";
   close.className = "media-modal-close";
   close.textContent = "✕";
-  close.type = "button";
   close.addEventListener("click", closeMediaModal);
 
-  const content = document.createElement("div");
-  content.className = "media-modal-content";
-
-  let media;
-
+  const media = document.createElement(type === "video" ? "video" : "img");
+  media.className = "media-modal-media";
   if (type === "video") {
-    media = document.createElement("video");
     media.controls = true;
     media.playsInline = true;
-    media.autoplay = true;
-
-    if (source instanceof Blob) {
-      activeModalURL = URL.createObjectURL(source);
-      media.src = activeModalURL;
-    } else {
-      media.src = source;
-    }
-
+    activeModalURL = URL.createObjectURL(source);
+    media.src = activeModalURL;
   } else {
-    media = document.createElement("img");
     media.alt = caption || "صورة من المعرض";
     media.src = source;
   }
 
-  media.className = "media-modal-media";
+  const title = document.createElement("p");
+  title.className = "media-modal-caption";
+  title.textContent = caption;
 
-  const text = document.createElement("p");
-  text.className = "media-modal-caption";
-  text.textContent = caption;
-
-  content.append(media, text);
-  dialog.append(close, content);
+  dialog.append(close, media, title);
   modal.append(backdrop, dialog);
-
   document.body.appendChild(modal);
 }
-
-
-// =====================================
-// تنزيل الملفات ومشاركتها
-// =====================================
 
 function downloadMedia(url, filename) {
   const link = document.createElement("a");
@@ -602,136 +625,88 @@ function downloadMedia(url, filename) {
   link.remove();
 }
 
-async function shareMedia(blob, filename, title) {
+async function shareMedia(blob, filename, title = "AI MASTER") {
   try {
-    const file = new File([blob], filename, {
-      type: blob.type || "application/octet-stream"
-    });
-
-    if (
-      navigator.share &&
-      navigator.canShare &&
-      navigator.canShare({ files: [file] })
-    ) {
-      await navigator.share({
-        files: [file],
-        title: title || "AI MASTER"
-      });
+    const file = new File([blob], filename, { type: blob.type || "application/octet-stream" });
+    if (navigator.share && navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file], title });
     } else {
-      toast("المشاركة غير مدعومة؛ سيتم تنزيل الملف");
       const url = URL.createObjectURL(blob);
       downloadMedia(url, filename);
       setTimeout(() => URL.revokeObjectURL(url), 60000);
+      toast("المشاركة غير متاحة؛ تم تجهيز التنزيل");
     }
   } catch (error) {
-    if (error.name !== "AbortError") {
-      toast("تعذرت مشاركة الملف");
-    }
+    if (error.name !== "AbortError") toast("تعذرت مشاركة الملف");
   }
 }
 
-
-// =====================================
-// تبويبات المعرض
-// =====================================
-
-let currentGalleryFilter = "all";
-
+// ---------- Gallery ----------
 function setupGalleryTabs() {
   const gallery = $("#galleryItems");
-
-  if (!gallery) return;
-
-  const parent = gallery.parentElement;
-
-  if ($("#galleryTabs")) return;
+  if (!gallery || $("#galleryTabs")) return;
 
   const tabs = document.createElement("div");
   tabs.id = "galleryTabs";
   tabs.className = "gallery-tabs";
 
-  const options = [
-    ["all", "الكل"],
-    ["images", "الصور"],
-    ["videos", "الفيديوهات"]
-  ];
-
-  options.forEach(([value, label]) => {
+  [["all", "الكل"], ["images", "الصور"], ["videos", "الفيديوهات"], ["prompts", "الأوصاف"]].forEach(([value, label]) => {
     const button = document.createElement("button");
-
     button.type = "button";
-    button.className =
-      "gallery-tab" + (value === currentGalleryFilter ? " active" : "");
-
+    button.className = "gallery-tab";
     button.textContent = label;
-
     button.addEventListener("click", () => {
       currentGalleryFilter = value;
-
-      tabs.querySelectorAll("button").forEach(item => {
-        item.classList.toggle("active", item === button);
-      });
-
+      $$(".gallery-tab", tabs).forEach(tab => tab.classList.toggle("active", tab === button));
       applyGalleryFilter();
     });
-
     tabs.appendChild(button);
   });
 
-  parent.insertBefore(tabs, gallery);
+  gallery.parentElement.insertBefore(tabs, gallery);
+  $$(".gallery-tab", tabs)[0]?.classList.add("active");
 }
 
 function applyGalleryFilter() {
-  const gallery = $("#galleryItems");
-
-  if (!gallery) return;
-
-  gallery.querySelectorAll("[data-gallery-kind]").forEach(card => {
-    const kind = card.dataset.galleryKind;
-
-    card.hidden =
-      currentGalleryFilter !== "all" &&
-      currentGalleryFilter !== kind;
+  $$(".gallery-card[data-gallery-kind]").forEach(card => {
+    card.hidden = currentGalleryFilter !== "all" && currentGalleryFilter !== card.dataset.galleryKind;
   });
-
-  const videoSection = $("#savedVideoSection");
-
-  if (videoSection) {
-    videoSection.hidden = currentGalleryFilter === "images";
-  }
 }
 
+function makeAction(label, action, danger = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "gallery-action" + (danger ? " danger" : "");
+  button.textContent = label;
+  button.addEventListener("click", action);
+  return button;
+}
 
-// =====================================
-// عرض المعرض المطوّر
-// =====================================
+function clearGalleryVideoURLs() {
+  galleryVideoURLs.forEach(url => URL.revokeObjectURL(url));
+  galleryVideoURLs.clear();
+}
 
 async function renderGallery() {
   const container = $("#galleryItems");
-
   if (!container) return;
-
   setupGalleryTabs();
-
-  container.innerHTML =
-    "<p class='hint'>جارٍ تحميل المعرض...</p>";
+  closeMediaModal();
+  clearGalleryVideoURLs();
+  container.innerHTML = "<p class='hint'>جارٍ تحميل المعرض...</p>";
 
   try {
-    const [images, videos] = await Promise.all([
-      getImages(),
-      readVideoFiles()
-    ]);
-
-    const prompts = get("ai_master_prompts");
-
+    const [images, videos] = await Promise.all([getImages(), readVideoFiles()]);
+    const prompts = readStorage("ai_master_prompts", []);
     images.sort((a, b) => Number(b.id) - Number(a.id));
+    videos.sort((a, b) => String(b.id).localeCompare(String(a.id)));
+    container.replaceChildren();
 
-    container.innerHTML = "";
-
-    if (!images.length && !prompts.length && !videos.length) {
-      container.innerHTML =
-        "<p class='hint'>لا توجد أعمال محفوظة بعد.</p>";
-      applyGalleryFilter();
+    if (!images.length && !videos.length && !prompts.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "لا توجد أعمال محفوظة بعد.";
+      container.appendChild(empty);
       return;
     }
 
@@ -743,492 +718,196 @@ async function renderGallery() {
       const image = document.createElement("img");
       image.src = item.image;
       image.alt = item.prompt || "صورة مولّدة";
-      image.className = "gallery-thumb";
-
-      image.addEventListener("click", () => {
-        openMediaModal("image", item.image, item.prompt);
-      });
+      image.loading = "lazy";
+      image.addEventListener("click", () => openMediaModal("image", item.image, item.prompt));
 
       const title = document.createElement("b");
       title.textContent = "🖼️ صورة مولّدة";
-
       const description = document.createElement("p");
       description.textContent = item.prompt || "";
-
       const date = document.createElement("small");
       date.textContent = item.date || "";
 
       const actions = document.createElement("div");
       actions.className = "gallery-actions";
-
-      const openButton = document.createElement("button");
-      openButton.className = "gallery-action";
-      openButton.textContent = "تكبير";
-      openButton.onclick = () =>
-        openMediaModal("image", item.image, item.prompt);
-
-      const downloadButton = document.createElement("button");
-      downloadButton.className = "gallery-action";
-      downloadButton.textContent = "تنزيل";
-      downloadButton.onclick = () =>
-        downloadMedia(item.image, "AI-MASTER-" + item.id + ".jpg");
-
-      const shareButton = document.createElement("button");
-      shareButton.className = "gallery-action";
-      shareButton.textContent = "مشاركة";
-      shareButton.onclick = async () => {
-        try {
-          const response = await fetch(item.image);
-          const blob = await response.blob();
-          await shareMedia(blob, "AI-MASTER-" + item.id + ".jpg", "AI MASTER");
-        } catch {
-          toast("تعذرت مشاركة الصورة");
-        }
-      };
-
-      const deleteButton = document.createElement("button");
-      deleteButton.className = "gallery-action danger";
-      deleteButton.textContent = "حذف";
-      deleteButton.onclick = async () => {
-        if (!confirm("هل تريد حذف هذه الصورة نهائياً؟")) return;
-
-        try {
-          await deleteImage(item.id);
-          toast("تم حذف الصورة");
-          renderGallery();
-        } catch {
-          toast("تعذر حذف الصورة");
-        }
-      };
-
       actions.append(
-        openButton,
-        downloadButton,
-        shareButton,
-        deleteButton
+        makeAction("تكبير", () => openMediaModal("image", item.image, item.prompt)),
+        makeAction("تنزيل", () => downloadMedia(item.image, `AI-MASTER-${item.id}.png`)),
+        makeAction("مشاركة", async () => {
+          try {
+            const blob = await (await fetch(item.image)).blob();
+            await shareMedia(blob, `AI-MASTER-${item.id}.png`);
+          } catch { toast("تعذرت مشاركة الصورة"); }
+        }),
+        makeAction("حذف", async () => {
+          if (!confirm("هل تريد حذف هذه الصورة نهائياً؟")) return;
+          try {
+            await deleteImage(item.id);
+            toast("تم حذف الصورة");
+            renderGallery();
+            renderRecent();
+          } catch { toast("تعذر حذف الصورة"); }
+        }, true)
       );
 
       card.append(image, title, description, date, actions);
-
       if (item.characterName) {
-        const characterInfo = document.createElement("small");
-        characterInfo.textContent = "الشخصية: " + item.characterName;
-        card.appendChild(characterInfo);
+        const character = document.createElement("small");
+        character.textContent = "الشخصية: " + item.characterName;
+        card.appendChild(character);
       }
-
       if (item.enhancedPrompt) {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
         summary.textContent = "عرض الوصف المحسّن";
-
         const text = document.createElement("p");
         text.textContent = item.enhancedPrompt;
-
         details.append(summary, text);
         card.appendChild(details);
       }
-
       container.appendChild(card);
     });
-
-    prompts.forEach(item => {
-      const card = document.createElement("article");
-      card.className = "gallery-card prompt-card";
-      card.dataset.galleryKind = "prompts";
-
-      const title = document.createElement("b");
-      title.textContent = item.type || "وصف محفوظ";
-
-      const description = document.createElement("p");
-      description.textContent = item.prompt || "";
-
-      const date = document.createElement("small");
-      date.textContent = item.date || "";
-
-      card.append(title, description, date);
-      container.appendChild(card);
-    });
-
-    await renderSavedVideos(videos);
-    applyGalleryFilter();
-
-  } catch (error) {
-    container.innerHTML =
-      "<p class='hint'>تعذر تحميل المعرض: " +
-      escapeHtml(error.message) + "</p>";
-  }
-}
-
-
-// =====================================
-// معلومات المنصة
-// =====================================
-
-$("#themeInfo")?.addEventListener("click", () =>
-  toast("AI MASTER — منصتك الخاصة")
-);
-
-
-// =====================================
-// قاعدة بيانات الفيديوهات
-// =====================================
-
-const FLOW_URL = "https://labs.google/fx/tools/flow";
-
-let videoDBPromise = null;
-
-function openVideoDB() {
-  if (videoDBPromise) return videoDBPromise;
-
-  videoDBPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open("AIMASTER_VIDEO_DB", 1);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-
-      if (!db.objectStoreNames.contains("videos")) {
-        db.createObjectStore("videos", { keyPath: "id" });
-      }
-    };
-
-    request.onsuccess = () => resolve(request.result);
-
-    request.onerror = () => {
-      videoDBPromise = null;
-      reject(request.error);
-    };
-  });
-
-  return videoDBPromise;
-}
-
-async function saveVideoFile(item) {
-  const db = await openVideoDB();
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction("videos", "readwrite");
-
-    tx.objectStore("videos").put(item);
-
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function readVideoFiles() {
-  const db = await openVideoDB();
-
-  return new Promise((resolve, reject) => {
-    const request = db.transaction("videos", "readonly")
-      .objectStore("videos")
-      .getAll();
-
-    request.onsuccess = () => resolve(request.result || []);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function removeVideoFile(id) {
-  const db = await openVideoDB();
-
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction("videos", "readwrite");
-
-    tx.objectStore("videos").delete(id);
-
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-
-// =====================================
-// أدوات Google Flow
-// =====================================
-
-function setupFlowStudio() {
-  const button = $("#videoDemo");
-
-  if (!button || $("#flowStudioTools")) return;
-
-  const panel = document.createElement("div");
-  panel.id = "flowStudioTools";
-
-  panel.style.cssText =
-    "display:grid;gap:12px;margin:15px 0;padding:14px;border:1px solid #7048e8;border-radius:12px;";
-
-  const copyButton = document.createElement("button");
-  copyButton.type = "button";
-  copyButton.textContent = "📋 نسخ وصف الفيديو";
-
-  const flowButton = document.createElement("button");
-  flowButton.type = "button";
-  flowButton.textContent = "🌐 فتح Google Flow";
-
-  const uploadTitle = document.createElement("b");
-  uploadTitle.textContent = "استيراد فيديو من الهاتف";
-
-  const uploadHint = document.createElement("small");
-  uploadHint.textContent =
-    "اختر فيديو قمت بتنزيله من Google Flow لحفظه في معرضك.";
-
-  const upload = document.createElement("input");
-  upload.type = "file";
-  upload.accept = "video/*";
-  upload.id = "videoImportFile";
-
-  [copyButton, flowButton].forEach(button => {
-    button.style.cssText =
-      "padding:13px;border:0;border-radius:10px;background:#7048e8;color:white;font-weight:bold;";
-  });
-
-  panel.append(
-    copyButton,
-    flowButton,
-    uploadTitle,
-    uploadHint,
-    upload
-  );
-
-  button.insertAdjacentElement("afterend", panel);
-
-  copyButton.addEventListener("click", async () => {
-    const prompt = $("#videoPrompt")?.value.trim();
-
-    if (!prompt) {
-      toast("اكتب وصف الفيديو أولاً");
-      return;
-    }
-
-    const duration = $("#videoDuration")?.value || "8";
-
-    const fullPrompt =
-      prompt + "\n\nTarget video duration: " + duration + " seconds.";
-
-    try {
-      await navigator.clipboard.writeText(fullPrompt);
-      toast("تم نسخ وصف الفيديو بنجاح");
-    } catch {
-      const field = document.createElement("textarea");
-      field.value = fullPrompt;
-
-      document.body.appendChild(field);
-      field.select();
-
-      const copied = document.execCommand("copy");
-      field.remove();
-
-      toast(copied ? "تم نسخ الوصف" : "تعذر النسخ");
-    }
-  });
-
-  flowButton.addEventListener("click", () => {
-    window.open(FLOW_URL, "_blank", "noopener");
-    toast("افتح Google Flow لإنشاء الفيديو");
-  });
-
-  upload.addEventListener("change", async () => {
-    const file = upload.files?.[0];
-
-    if (!file) return;
-
-    if (!file.type.startsWith("video/")) {
-      toast("الملف المختار ليس فيديو");
-      upload.value = "";
-      return;
-    }
-
-    if (file.size > 150 * 1024 * 1024) {
-      toast("حجم الفيديو أكبر من 150 ميغابايت");
-      upload.value = "";
-      return;
-    }
-
-    try {
-      await saveVideoFile({
-        id: "video-" + Date.now(),
-        name: file.name,
-        blob: file,
-        prompt: $("#videoPrompt")?.value.trim() || "",
-        date: new Date().toLocaleString("ar")
-      });
-
-      toast("تم حفظ الفيديو في AI MASTER");
-
-      if ($("#videosMsg")) {
-        $("#videosMsg").textContent = "تم حفظ الفيديو بنجاح.";
-      }
-
-      upload.value = "";
-
-      await renderGallery();
-
-    } catch (error) {
-      console.error(error);
-      toast("تعذر حفظ الفيديو. تحقق من مساحة الهاتف.");
-    }
-  });
-}
-
-
-// =====================================
-// إدارة روابط معاينة الفيديو
-// =====================================
-
-const galleryVideoURLs = new Set();
-
-function clearGalleryVideoURLs() {
-  galleryVideoURLs.forEach(url => URL.revokeObjectURL(url));
-  galleryVideoURLs.clear();
-}
-
-
-// =====================================
-// عرض الفيديوهات داخل المعرض
-// =====================================
-
-async function renderSavedVideos(existingVideos = null) {
-  const gallery = $("#galleryItems");
-
-  if (!gallery) return;
-
-  closeMediaModal();
-  clearGalleryVideoURLs();
-
-  let section = $("#savedVideoSection");
-
-  if (!section) {
-    section = document.createElement("section");
-    section.id = "savedVideoSection";
-    section.className = "saved-video-section";
-    gallery.appendChild(section);
-  }
-
-  section.innerHTML = "<h3>🎬 فيديوهاتي المحفوظة</h3>";
-
-  try {
-    const videos = existingVideos || await readVideoFiles();
-
-    if (!videos.length) {
-      section.innerHTML +=
-        "<p class='hint'>لم تحفظ أي فيديو بعد.</p>";
-      applyGalleryFilter();
-      return;
-    }
-
-    videos.sort((a, b) =>
-      String(b.id).localeCompare(String(a.id))
-    );
 
     videos.forEach(item => {
       const card = document.createElement("article");
-      card.className = "gallery-card video-gallery-card";
-
+      card.className = "gallery-card";
+      card.dataset.galleryKind = "videos";
       const player = document.createElement("video");
       player.controls = true;
       player.playsInline = true;
       player.preload = "metadata";
       player.className = "gallery-video";
+      const url = URL.createObjectURL(item.blob);
+      galleryVideoURLs.add(url);
+      player.src = url;
 
-      const videoURL = URL.createObjectURL(item.blob);
-      galleryVideoURLs.add(videoURL);
-      player.src = videoURL;
-
-      const name = document.createElement("p");
+      const name = document.createElement("b");
       name.textContent = item.name || "فيديو محفوظ";
-
       const date = document.createElement("small");
       date.textContent = item.date || "";
-
       const actions = document.createElement("div");
       actions.className = "gallery-actions";
-
-      const openButton = document.createElement("button");
-      openButton.className = "gallery-action";
-      openButton.textContent = "تكبير";
-      openButton.onclick = () =>
-        openMediaModal("video", item.blob, item.name);
-
-      const downloadButton = document.createElement("button");
-      downloadButton.className = "gallery-action";
-      downloadButton.textContent = "تنزيل";
-      downloadButton.onclick = () =>
-        downloadMedia(videoURL, item.name || "AI-MASTER-video.mp4");
-
-      const shareButton = document.createElement("button");
-      shareButton.className = "gallery-action";
-      shareButton.textContent = "مشاركة";
-      shareButton.onclick = () =>
-        shareMedia(
-          item.blob,
-          item.name || "AI-MASTER-video.mp4",
-          "AI MASTER"
-        );
-
-      const deleteButton = document.createElement("button");
-      deleteButton.className = "gallery-action danger";
-      deleteButton.textContent = "حذف";
-
-      deleteButton.onclick = async () => {
-        if (!confirm("هل تريد حذف هذا الفيديو نهائياً؟")) return;
-
-        try {
-          await removeVideoFile(item.id);
-          toast("تم حذف الفيديو");
-          await renderGallery();
-
-        } catch {
-          toast("تعذر حذف الفيديو");
-        }
-      };
-
       actions.append(
-        openButton,
-        downloadButton,
-        shareButton,
-        deleteButton
+        makeAction("تكبير", () => openMediaModal("video", item.blob, item.name)),
+        makeAction("تنزيل", () => downloadMedia(url, item.name || "AI-MASTER-video.mp4")),
+        makeAction("مشاركة", () => shareMedia(item.blob, item.name || "AI-MASTER-video.mp4")),
+        makeAction("حذف", async () => {
+          if (!confirm("هل تريد حذف هذا الفيديو نهائياً؟")) return;
+          try {
+            await removeVideoFile(item.id);
+            toast("تم حذف الفيديو");
+            renderGallery();
+            renderRecent();
+          } catch { toast("تعذر حذف الفيديو"); }
+        }, true)
       );
-
       card.append(player, name, date, actions);
-
       if (item.prompt) {
         const details = document.createElement("details");
         const summary = document.createElement("summary");
         summary.textContent = "عرض وصف الفيديو";
-
-        const description = document.createElement("p");
-        description.textContent = item.prompt;
-
-        details.append(summary, description);
+        const text = document.createElement("p");
+        text.textContent = item.prompt;
+        details.append(summary, text);
         card.appendChild(details);
       }
+      container.appendChild(card);
+    });
 
-      section.appendChild(card);
+    prompts.forEach(item => {
+      const card = document.createElement("article");
+      card.className = "gallery-card";
+      card.dataset.galleryKind = "prompts";
+      const title = document.createElement("b");
+      title.textContent = item.type || "وصف محفوظ";
+      const text = document.createElement("p");
+      text.textContent = item.prompt || "";
+      const date = document.createElement("small");
+      date.textContent = item.date || "";
+      card.append(title, text, date);
+      container.appendChild(card);
     });
 
     applyGalleryFilter();
-
   } catch (error) {
     console.error(error);
-
-    section.innerHTML +=
-      "<p class='hint'>تعذر تحميل الفيديوهات المحفوظة.</p>";
+    container.innerHTML = "";
+    const message = document.createElement("p");
+    message.className = "hint";
+    message.textContent = "تعذر تحميل المعرض: " + (error.message || "خطأ غير معروف");
+    container.appendChild(message);
   }
 }
 
+// ---------- Recent items on home ----------
+async function renderRecent() {
+  const container = $("#recent");
+  if (!container) return;
+  try {
+    const images = await getImages();
+    images.sort((a, b) => Number(b.id) - Number(a.id));
+    container.replaceChildren();
 
-// =====================================
-// تشغيل وظائف AI MASTER
-// =====================================
+    if (!images.length) {
+      container.className = "empty";
+      const icon = document.createElement("span");
+      icon.textContent = "▧";
+      const title = document.createElement("b");
+      title.textContent = "معرضك ينتظرك";
+      const hint = document.createElement("small");
+      hint.textContent = "ستظهر هنا أحدث الصور التي تحفظها.";
+      container.append(icon, title, hint);
+      return;
+    }
 
-setupFlowStudio();
-
-renderCharacters();
-renderCharacterSelector();
-renderGallery();
-
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
-  });
+    container.className = "recent-grid";
+    images.slice(0, 4).forEach(item => {
+      const image = document.createElement("img");
+      image.src = item.image;
+      image.alt = item.prompt || "أحدث صورة";
+      image.loading = "lazy";
+      image.addEventListener("click", () => {
+        showPage("gallery");
+        openMediaModal("image", item.image, item.prompt);
+      });
+      container.appendChild(image);
+    });
+  } catch (error) {
+    console.warn("تعذر عرض الأعمال الأخيرة", error);
+  }
 }
+
+// ---------- Startup ----------
+function startApp() {
+  setupPromptEnhancer();
+  setupFlowStudio();
+  renderCharacters();
+  renderCharacterSelector();
+  renderRecent();
+
+  // افتح الصفحة الافتراضية بأمان.
+  if (!PAGE_IDS.some(id => $("#" + id)?.classList.contains("active"))) {
+    $("#home")?.classList.add("active");
+  }
+
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js").catch(error => {
+        console.warn("تعذر تسجيل Service Worker:", error);
+      });
+    }, { once: true });
+  }
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", startApp, { once: true });
+} else {
+  startApp();
+}
+
+window.addEventListener("beforeunload", () => {
+  if (videoImageURL) URL.revokeObjectURL(videoImageURL);
+  if (editImageURL) URL.revokeObjectURL(editImageURL);
+  clearGalleryVideoURLs();
+  if (activeModalURL) URL.revokeObjectURL(activeModalURL);
+});
